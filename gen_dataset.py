@@ -87,6 +87,10 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
     selected_questions.extend(batch_questions)
     selected_answers.extend(batch_answers)
 
+    Dataset.from_dict({
+            "question": selected_questions,
+            "answer": selected_answers
+        }).save_to_disk(f"{SAVE_PATH}_checkpoint_{batch_idx}")
     print(f"第 {batch_idx + 1} 个批次处理完成，已存 {len(selected_questions)} 条有效数据")
     
 

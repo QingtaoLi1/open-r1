@@ -9,6 +9,7 @@ environment:
   image: amlt-sing/acpt-torch2.5.0-py3.10-cuda12.4-ubuntu22.04
   setup:
     - pwd
+    - sudo apt-get update
     - sudo apt-get install -y vim
     - pip install uv
     - uv venv openr1 --python 3.11

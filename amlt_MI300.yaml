@@ -9,6 +9,7 @@ environment:
   image: amlt-sing/acpt-rocm6.1_ubuntu20.04_py3.9_pytorch2.1.2
   setup:
     - pwd
+    - sudo apt-get update
     - sudo apt-get install -y vim
     - pip install uv
     - uv venv openr1 --python 3.11
