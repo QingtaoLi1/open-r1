@@ -1,3 +1,4 @@
+from typing import List
 from datasets import load_dataset, Dataset
 from math_verify import parse, verify, LatexExtractionConfig, ExprExtractionConfig, StringExtractionConfig
 import os
@@ -21,8 +22,16 @@ CHECKPOINT_FILE = os.path.join(SAVE_PATH, "checkpoint.txt")
 
 os.makedirs(SAVE_PATH, exist_ok=True)
 
-start_batch = 0
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+
+class EvalSample:
+    def __init__(self, sample, i, gold_answer, generated_answer, answer_to_verify):
+        self.sample = sample
+        self.i = i
+        self.gold_answer = gold_answer
+        self.generated_answer = generated_answer
+        self.answer_to_verify = answer_to_verify
+
+
 
 print("加载原始数据集...")
 dataset = load_dataset(DATASET_NAME, name="default", split="train")
@@ -30,9 +39,10 @@ dataset = load_dataset(DATASET_NAME, name="default", split="train")
 sub_dataset = dataset.select(range(START_NUM, START_NUM + SELECT_NUM, 1))
 dsl = sub_dataset.to_list()
 
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
 for index, s in tqdm(enumerate(dsl)):
     messages = [
-            {"role": "user", "content": s['problem'] + "\nPlease reason step by step, and put your final answer within \\boxed{}. If it is an multiple choice question, please MUST put both the final option and the answer value within \\boxed{}, e.g. \\boxed{B}, \\boxed{1}."},
+            {"role": "user", "content": s['problem'] + "\nPlease reason step by step, and put your final answer within \\boxed{}."},
         ]
     text = tokenizer.apply_chat_template(
             messages,
@@ -42,10 +52,13 @@ for index, s in tqdm(enumerate(dsl)):
     s['index'] = index
     s['prompted_question'] = text
 
+print("\n问题-答案示例：")
 print(dsl[8]['prompted_question'])
 print(dsl[8]['answer'])
+print()
 
 
+print("加载模型...")
 llm = LLM(
     model=MODEL_NAME,
     tensor_parallel_size=4,
@@ -61,6 +74,7 @@ sampling_params = SamplingParams(
     max_tokens=MAX_TOKENS,
     skip_special_tokens=True
 )
+
 
 ### Start generation ###
 def extract_boxed(text):
@@ -82,6 +96,20 @@ def extract_boxed(text):
             i += 1
     return results
 
+
+def record_vefify_results_to_dataset_sample(s, this_answer, is_correct, is_correct_model, eval_vote):
+    if '14B_generations' not in s:
+        s['14B_generations'] = ["<think>\n" + this_answer]
+        s['correctness_answer_verify'] = [is_correct]
+        s['correctness_answer_verify_model'] = [is_correct_model]
+        s['verify_model_vote'] = [eval_vote]
+    else:
+        s['14B_generations'].append("<think>\n" + this_answer)
+        s['correctness_answer_verify'].append(is_correct)
+        s['correctness_answer_verify_model'].append(is_correct_model)
+        s['verify_model_vote'].append(eval_vote)
+
+
 selected_indices = []
 selected_questions = []
 original_answers = []
@@ -91,7 +119,8 @@ correctness_answer_verify_model = []
 verify_model_vote = []
 
 total_batches = (len(dsl) + BATCH_SIZE - 1) // BATCH_SIZE
-print(f"开始批量处理（共 {total_batches} 个批次）...")
+start_batch = 0
+print(f"开始批量处理（共 {total_batches - start_batch} 个批次）...")
 for batch_idx in tqdm(range(start_batch, total_batches)):
     
     start_idx = batch_idx * BATCH_SIZE
@@ -103,29 +132,26 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
         outputs = llm.generate(current_questions, sampling_params)
         
         next_round_indices = []
-        for i, (s, output) in enumerate(zip(current_samples, outputs)):
+        eval_samples : List[EvalSample] = []
+        for i, (s, output) in tqdm(enumerate(zip(current_samples, outputs))):
+            # assert i == s['index'] - start_idx - 1
             if not output.outputs:
-                print(f"第 {i + 1} 个样本生成失败，跳过")
+                print(f"第 {i + 1} 个样本生成失败，跳过\n")
+                record_vefify_results_to_dataset_sample(s, "", None, None, 0)
+                next_round_indices.append(i)
                 continue
             
             generated_output = output.outputs[0]
             token_count = len(generated_output.token_ids)
             if token_count < MIN_TOKENS or MAX_TOKENS - 100 <= token_count:
-                if '14B_generations' not in s:
-                    s['14B_generations'] = [""]
-                    s['correctness_answer_verify'] = [None]
-                    s['correctness_answer_verify_model'] = [None]
-                    s['verify_model_vote'] = [0]
-                else:
-                    s['14B_generations'].append("")
-                    s['correctness_answer_verify'].append(None)
-                    s['correctness_answer_verify_model'].append(None)
-                    s['verify_model_vote'].append(0)
+                print(f"第 {i + 1} 个样本生成长度过长，跳过\n")
+                record_vefify_results_to_dataset_sample(s, "", None, None, 0)
                 next_round_indices.append(i)
                 continue
-            
+
             gold_answer = s['answer'].replace("\\\\", "\\")
-            this_answer = generated_output.text.strip().replace("\\dfrac", "\\frac")
+            this_answer = generated_output.text.strip()
+            # this_answer = this_answer.replace("\\dfrac", "\\frac")
 
             answer_to_verify = this_answer.split("</think>")[-1].strip()
             boxed_contents = extract_boxed(answer_to_verify)
@@ -134,12 +160,29 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
             iron = parse(answer_to_verify, extraction_config=[LatexExtractionConfig(), ExprExtractionConfig(), StringExtractionConfig()])
             is_correct = verify(gold, iron)
 
-            is_correct_model = None
-            eval_vote = 0
             if not is_correct:
                 eval_prompt = f"I will give you a question, a gold answer and a generated answer, please tell me whether the generated answer is correct. There's no need to check the reasoning process, you should be brief and only focus on the final answer. \n\n<Question>: {s['problem']}\n\n<Gold Answer>: {gold_answer}\n\n<Generated Answer>: {answer_to_verify}\n\n Remember that you should be brief! Only give one word as output: TRUE or FALSE. "
-                outputs_eval = llm.generate([eval_prompt, eval_prompt, eval_prompt], sampling_params)
-                for eval_output in outputs_eval:
+                eval_samples.append(EvalSample(s, i, gold_answer, this_answer, answer_to_verify))
+                continue
+            else:
+                print(f"\n判断 {is_correct}。第 {i + 1} 个样本的答案：{answer_to_verify} <ext> {iron}。原答案：{gold_answer} <ext> {gold}。")
+                print(f"原始输出：{this_answer.split('</think>')[-1].strip()}\n------------------------------------------------\n")
+                record_vefify_results_to_dataset_sample(s, "<think>\n" + this_answer, is_correct, is_correct_model=None, eval_vote=0)
+
+        if len(eval_samples) > 0:
+            # Gather all the prompts to make it more efficient
+            num_judges = 3
+            eval_prompts = []
+            for eval_sample in eval_samples:
+                eval_prompt = f"I will give you a question, a gold answer and a generated answer, please tell me whether the generated answer is correct. There's no need to check the reasoning process, you should be brief and only focus on the final answer. \n\n<Question>: {eval_sample.sample['problem']}\n\n<Gold Answer>: {eval_sample.gold_answer}\n\n<Generated Answer>: {eval_sample.answer_to_verify}\n\n Remember that you should be brief! Only give one word as output: TRUE or FALSE. "
+                eval_prompts.extend([eval_prompt] * num_judges)
+
+            eval_outputs = llm.generate(eval_prompts, sampling_params)
+            for i, eval_sample in enumerate(eval_samples):
+                eval_vote = 0
+                is_correct_model = None
+                for j in range(3):
+                    eval_output = eval_outputs[i * num_judges + j]
                     eval_result = eval_output.outputs[0].text.split("</think>")[-1].strip()
                     if "TRUE" in eval_result:
                         eval_vote += 1
@@ -149,26 +192,14 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
                     is_correct_model = True
                 else:
                     is_correct_model = False
-            else:
-                outputs_eval[0].outputs[0].text = ""
 
-            # print(f"\n判断 {is_correct}, {is_correct_model}。第 {i + 1} 个样本的答案：{answer_to_verify} <ext> {iron}。原答案：{gold_answer} <ext> {gold}。")
-            # print(f"原始输出：{this_answer.split('</think>')[-1].strip()}\n------------------------------------------------\n")
-            # print(f"评委总分：{eval_vote}\n------------------------------------------------\n")
+                print(f"\n判断 False, {is_correct_model}。第 {eval_sample.i + 1} 个样本的答案：{eval_sample.answer_to_verify}。原答案：{eval_sample.gold_answer}。")
+                print(f"原始输出：{eval_sample.generated_answer.split('</think>')[-1].strip()}\n------------------------------------------------\n")
+                print(f"评委总分：{eval_vote}\n------------------------------------------------\n")
+                record_vefify_results_to_dataset_sample(eval_sample.sample, "<think>\n" + eval_sample.generated_answer, False, is_correct_model, eval_vote)
 
-            if '14B_generations' not in s:
-                s['14B_generations'] = ["<think>\n" + this_answer]
-                s['correctness_answer_verify'] = [is_correct]
-                s['correctness_answer_verify_model'] = [is_correct_model]
-                s['verify_model_vote'] = [eval_vote]
-            else:
-                s['14B_generations'].append("<think>\n" + this_answer)
-                s['correctness_answer_verify'].append(is_correct)
-                s['correctness_answer_verify_model'].append(is_correct_model)
-                s['verify_model_vote'].append(eval_vote)
-
-            if not (is_correct or is_correct_model):
-                next_round_indices.append(i)
+            if not is_correct_model:
+                next_round_indices.append(eval_sample.i)
         
         current_questions = [current_questions[i] for i in next_round_indices]
         current_samples = [current_samples[i] for i in next_round_indices]
@@ -195,8 +226,6 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
         }).save_to_disk(f"{SAVE_PATH}/checkpoint_{batch_idx}")
     print(f"第 {batch_idx + 1} 个批次处理完成，已存 {len(selected_questions)} 条有效数据")
     
-
-
 
 Dataset.from_dict({
         "index": selected_indices,
