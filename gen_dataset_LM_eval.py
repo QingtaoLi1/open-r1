@@ -136,7 +136,7 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
         for i, (s, output) in tqdm(enumerate(zip(current_samples, outputs))):
             # assert i == s['index'] - start_idx - 1
             if not output.outputs:
-                print(f"第 {i + 1} 个样本生成失败，跳过\n")
+                print(f"第 {eval_sample.i + 1 + 1} 个样本生成失败，跳过\n")
                 record_vefify_results_to_dataset_sample(s, "", None, None, 0)
                 next_round_indices.append(i)
                 continue
@@ -144,7 +144,7 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
             generated_output = output.outputs[0]
             token_count = len(generated_output.token_ids)
             if token_count < MIN_TOKENS or MAX_TOKENS - 100 <= token_count:
-                print(f"第 {i + 1} 个样本生成长度过长，跳过\n")
+                print(f"第 {eval_sample.i + 1 + 1} 个样本生成长度过长，跳过\n")
                 record_vefify_results_to_dataset_sample(s, "", None, None, 0)
                 next_round_indices.append(i)
                 continue
@@ -165,8 +165,8 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
                 eval_samples.append(EvalSample(s, i, gold_answer, this_answer, answer_to_verify))
                 continue
             else:
-                print(f"\n判断 {is_correct}。第 {i + 1} 个样本的答案：{answer_to_verify} <ext> {iron}。原答案：{gold_answer} <ext> {gold}。")
-                print(f"原始输出：{this_answer.split('</think>')[-1].strip()}\n------------------------------------------------\n")
+                # print(f"\n判断 {is_correct}。第 {eval_sample.i + 1 + 1} 个样本的答案：{answer_to_verify} <ext> {iron}。原答案：{gold_answer} <ext> {gold}。")
+                # print(f"原始输出：{this_answer.split('</think>')[-1].strip()}\n------------------------------------------------\n")
                 record_vefify_results_to_dataset_sample(s, "<think>\n" + this_answer, is_correct, is_correct_model=None, eval_vote=0)
 
         if len(eval_samples) > 0:
@@ -193,9 +193,9 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
                 else:
                     is_correct_model = False
 
-                print(f"\n判断 False, {is_correct_model}。第 {eval_sample.i + 1} 个样本的答案：{eval_sample.answer_to_verify}。原答案：{eval_sample.gold_answer}。")
-                print(f"原始输出：{eval_sample.generated_answer.split('</think>')[-1].strip()}\n------------------------------------------------\n")
-                print(f"评委总分：{eval_vote}\n------------------------------------------------\n")
+                # print(f"\n判断 False, {is_correct_model}。第 {eval_sample.i + 1} 个样本的答案：{eval_sample.answer_to_verify}。原答案：{eval_sample.gold_answer}。")
+                # print(f"原始输出：{eval_sample.generated_answer.split('</think>')[-1].strip()}\n------------------------------------------------\n")
+                # print(f"评委总分：{eval_vote}\n------------------------------------------------\n")
                 record_vefify_results_to_dataset_sample(eval_sample.sample, "<think>\n" + eval_sample.generated_answer, False, is_correct_model, eval_vote)
 
             if not is_correct_model:
