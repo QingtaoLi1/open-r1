@@ -198,8 +198,8 @@ for batch_idx in tqdm(range(start_batch, total_batches)):
                 # print(f"评委总分：{eval_vote}\n------------------------------------------------\n")
                 record_vefify_results_to_dataset_sample(eval_sample.sample, "<think>\n" + eval_sample.generated_answer, False, is_correct_model, eval_vote)
 
-            if not is_correct_model:
-                next_round_indices.append(eval_sample.i)
+                if not is_correct_model:
+                    next_round_indices.append(eval_sample.i)
         
         current_questions = [current_questions[i] for i in next_round_indices]
         current_samples = [current_samples[i] for i in next_round_indices]
