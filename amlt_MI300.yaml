@@ -30,6 +30,8 @@ environment:
     - git-lfs --version
     - git config --global credential.helper store
 
+    - echo -e "alias ll='ls -al'" >> ~/.bashrc
+
 storage:
   input:
     storage_account_name: dcasingularity4556773921
